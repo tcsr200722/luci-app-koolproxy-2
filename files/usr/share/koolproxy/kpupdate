@@ -1,0 +1,228 @@
+#!/bin/sh
+# set -x
+
+. /lib/functions.sh
+
+CONFIG=koolproxy
+KP_DIR=/usr/share/koolproxy
+TMP_DIR=/tmp/koolproxy
+LOGFILE="/var/log/koolproxy.log"
+
+rulesM="koolproxy.txt"
+rulesS="daily"
+rulesV="kp.dat"
+rulesU="user"
+
+config_t_get() {
+	local index=0
+	[ -n "$4" ] && index=$4
+	local ret=$(uci get $CONFIG.@$1[$index].$2 2>/dev/null)
+	echo ${ret:=$3}
+}
+
+limit_log() {
+	local log=$1
+	[ ! -f "$log" ] && return
+	local sc=52
+	[ -n "$2" ] && sc=$2
+	local count=$(grep -c "" $log)
+	if [ $count -gt $sc ];then
+		let count=count-$sc
+		sed -i "1,$count d" $log
+	fi
+}
+
+init_env() {
+	rm -rf /tmp/koolproxy.txt
+	rm -rf /tmp/kp.dat
+	rm -rf /tmp/daily.txt
+	#rm $KP_DIR/data/rules/*_https.txt
+	#rm $KP_DIR/data/rules/kpr_our_rule.txt
+}
+
+restart_koolproxy() {
+	/etc/init.d/koolproxy restart
+}
+
+precise_waiting(){
+    $1
+    while ps -ef | grep $1 | grep -v 'grep'; do
+       sleep 1
+       continue
+    done
+}
+
+update_mainrule() {
+     echo "$(date "+%F %T"): -------------------开始更新koolproxy静态规则 -------------------" >> $LOGFILE
+		wget-ssl  --quiet --no-check-certificate https://raw.githubusercontent.com/houzi-/CDN/master/koolproxy.txt -O /tmp/koolproxy.txt
+        localMD5=`md5sum $KP_DIR/data/rules/koolproxy.txt | awk '{print $1}'`
+		remoteMD5=`md5sum /tmp/koolproxy.txt | awk '{print $1}'`
+		echo "$(date "+%F %T"):  本地静态规则版本MD5：" $localMD5 >> $LOGFILE
+		echo "$(date "+%F %T"):  在线静态规则版本MD5：" $remoteMD5 >>$LOGFILE
+		echo  "----------------------------------------------------------------" >>$LOGFILE
+		if [ "$localMD5" != "$remoteMD5" ];then
+			echo "$(date "+%F %T"): 检测到新版本静态规则，开始更新..." >> $LOGFILE
+			echo "$(date "+%F %T"): 将临时文件覆盖到原始 静态规则 文件" >> $LOGFILE
+			echo  "================================================================" >>$LOGFILE
+				mv /tmp/koolproxy.txt $KP_DIR/data/rules/koolproxy.txt
+				
+			else
+				echo "$(date "+%F %T"): 检测到 静态规则和服务器规则相同，无需更新!" >> $LOGFILE
+				echo  "================================================================" >>$LOGFILE
+			fi
+}
+
+update_supplementrule() {
+	echo "$(date "+%F %T"): -------------------开始更新koolproxy每日规则 -------------------" >> $LOGFILE
+		wget-ssl  --quiet --no-check-certificate https://raw.githubusercontent.com/houzi-/CDN/master/daily.txt -O /tmp/daily.txt
+		localMD5=`md5sum $KP_DIR/data/rules/daily.txt | awk '{print $1}'`
+		remoteMD5=`md5sum /tmp/daily.txt | awk '{print $1}'`
+		echo "$(date "+%F %T"):  本地加密规则版本MD5：" $localMD5 >> $LOGFILE
+		echo "$(date "+%F %T"):  在线加密规则版本MD5：" $remoteMD5 >>$LOGFILE
+		echo  "----------------------------------------------------------------" >>$LOGFILE
+		if [ "$localMD5" != "$remoteMD5" ];then
+			echo "$(date "+%F %T"): 检测到新版本每日规则，开始更新..." >> $LOGFILE
+			echo "$(date "+%F %T"): 将临时文件覆盖到原始 每日规则 文件" >> $LOGFILE
+			echo  "================================================================" >>$LOGFILE
+				mv /tmp/daily.txt $KP_DIR/data/rules/daily.txt
+				
+			else
+				echo "$(date "+%F %T"): 检测到 每日规则和服务器规则相同，无需更新!" >> $LOGFILE
+				echo  "================================================================" >>$LOGFILE
+			fi
+		
+}
+
+update_vediorule() {
+	echo "$(date "+%F %T"): -------------------开始更新koolproxy加密规则 -------------------" >> $LOGFILE
+		wget-ssl  --quiet --no-check-certificate https://github.com/houzi-/CDN/raw/master/kp.dat -O /tmp/kp.dat
+		localMD5=`md5sum $KP_DIR/data/rules/kp.dat | awk '{print $1}'`
+		remoteMD5=`md5sum /tmp/kp.dat | awk '{print $1}'`
+		echo "$(date "+%F %T"):  本地加密规则版本MD5：" $localMD5 >> $LOGFILE
+		echo "$(date "+%F %T"):  在线加密规则版本MD5：" $remoteMD5 >>$LOGFILE
+		echo  "----------------------------------------------------------------" >>$LOGFILE
+		if [ "$localMD5" != "$remoteMD5" ];then
+			echo "$(date "+%F %T"): 检测到新版本加密规则，开始更新..." >> $LOGFILE
+			echo "$(date "+%F %T"): 将临时文件覆盖到原始 加密规则 文件" >> $LOGFILE
+			echo  "================================================================" >>$LOGFILE
+				mv /tmp/kp.dat $KP_DIR/data/rules/kp.dat
+				
+		else
+				echo "$(date "+%F %T"): 检测到 加密规则和服务器规则相同，无需更新!" >> $LOGFILE
+				echo  "================================================================" >>$LOGFILE
+		fi
+}
+
+
+
+__update_rule() {
+	local name
+	local file
+	local exrule
+	local enable
+	config_get name $1 name
+	config_get file $1 file
+	config_get exrule $1 url
+	config_get enable $1 load
+	if [ -n "$file" ] && [ -n "$exrule" ]; then
+		if [ $enable -ne 1 ]; then
+			return
+		fi
+		__compare_file "$name" "$KP_DIR/data/rules/$file" "$exrule"
+		if [ "$?" == "0" ]; then
+			uci set koolproxy.$1.time="`date +%Y-%m-%d" "%H:%M`"
+			uci commit koolproxy
+			RESTART_KOOLPROXY=true
+		fi
+		cat $KP_DIR/data/rules/$file >>$KP_DIR/data/rules/user.txt
+		echo >>$LOGFILE
+	fi
+}
+		
+update_rss_rules() {
+	cp $KP_DIR/data/user.txt $KP_DIR/data/rules/user.txt
+	config_load $CONFIG
+	config_foreach __update_rule rss_rule
+}
+
+update_adb_host() {
+	/usr/sbin/adblockplus >>$LOGFILE 2>&1 &
+	if [ "$?" == "0" ]; then
+		RESTART_DNSMASQ=true
+	fi
+}
+
+# main process
+
+init_env
+
+limit_log $LOGFILE
+
+koolproxy_rules=$(config_t_get global koolproxy_rules 1)
+
+# update rules
+	
+limit_log $LOGFILE
+
+koolproxy_rules=$(config_t_get global koolproxy_rules 1)
+
+# update rules
+	
+	result=$(echo "$koolproxy_rules" | grep "${rulesM}")
+	
+	if [[ "$result" != "" ]]; then
+		update_mainrule
+	else
+		echo "$(date "+%F %T"): 没有选择静态规则，放弃更新。" >> $LOGFILE
+	fi
+	
+	result=$(echo "$koolproxy_rules" | grep "${rulesS}")
+	
+	if [[ "$result" != "" ]]; then
+		update_supplementrule
+	else
+		echo "$(date "+%F %T"): 没有选择每日规则，放弃更新。" >> $LOGFILE
+	fi
+	
+	result=$(echo "$koolproxy_rules" | grep "${rulesV}")
+	
+	if [[ "$result" != "" ]]; then
+		update_vediorule
+	else
+		echo "$(date "+%F %T"): 没有选择视频规则，放弃更新。" >> $LOGFILE
+	fi
+	
+
+# update user rules
+
+	result=$(echo "$koolproxy_rules" | grep "${rulesU}")
+	
+	if [[ "$result" != "" ]]; then
+	update_rss_rules
+	else
+		echo "$(date "+%F %T"): 没有选择自定义规则，放弃更新。" >> $LOGFILE
+	fi
+	
+	
+koolproxy_mode=$(config_t_get global koolproxy_mode 1)
+koolproxy_host=$(config_t_get global koolproxy_host 0)
+
+# update ADB Plus Host
+if [ "$koolproxy_mode" == "2" ] && [ "$koolproxy_host" == "1" ];then
+ update_adb_host
+ 
+fi
+
+sleep 2m
+
+
+
+init_env
+
+# restart koolproxy
+echo "$(date "+%F %T"): 规则优化完成，重启koolproxy进程 ! " >> $LOGFILE
+echo  "  " >>$LOGFILE
+restart_koolproxy
+echo "$(date "+%F %T"): ===== KoolProxy进程开始运行，Enjoy ! =========== " >> $LOGFILE
+echo "*************************************************************************************************************************************" >> $LOGFILE
+echo "" >> $LOGFILE
